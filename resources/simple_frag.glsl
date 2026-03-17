@@ -7,6 +7,7 @@ uniform vec3  lightPos;
 uniform vec3  MatAmb;
 uniform vec3  MatDif;
 uniform vec3  MatSpec;
+uniform vec3 viewPos;
 uniform float MatShine;
 
 out vec4 color;
@@ -15,8 +16,8 @@ void main() {
     vec3 N = normalize(fragNor);
     vec3 L = normalize(lightPos - fragPos);
 
-    // view dir : camera fixed at (0, 0, 12) in world space
-    vec3 V = normalize(vec3(0.0, 0.0, 12.0) - fragPos);
+    // view dir 
+    vec3 V = normalize(viewPos - fragPos);
 
     // halfway vector for specular
     vec3 H = normalize(L + V);

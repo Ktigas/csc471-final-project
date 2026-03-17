@@ -51,6 +51,9 @@ public:
     shared_ptr<Shape>         ballerina;
     shared_ptr<Shape>         swan;
     shared_ptr<Shape>         stage;
+    shared_ptr<Shape>         mountain;
+    shared_ptr<Shape>         waterlily;
+    vector<shared_ptr<Shape>> treeParts;
     vector<shared_ptr<Shape>> flowerParts;
 
     // Ground plane (CPU data → GPU, texture mapped)
@@ -66,15 +69,21 @@ public:
     // Stage texture
     shared_ptr<Texture> stageTex;
 
+    // Mountain + tree textures
+    shared_ptr<Texture> mountainTex;
+    shared_ptr<Texture> treeTex;
 
     // Particle system
     shared_ptr<Program> partProg;
-    particleSys* thePartSystem;
+    particleSys* thePartSystem = nullptr;
     shared_ptr<Texture> particleTex;
 
     // Particle timing
     float partTime = 0.0f;
-
+    vec3 swanPosition = vec3(0, -2.0f, 0); // Track swan position
+    bool prevShowSwan = false; // Track previous swan state for edge detection
+    float particleDelayTimer = 0.0f; // Timer for particle delay
+    bool particlesActive = false; // Whether particles are active
 
     // Camera
     float phi   = 0.0f;
@@ -103,16 +112,14 @@ public:
     float tourSpeed  = 0.06f;
     vec3  tourLookAt = vec3(0, 0, 0);
 
-    // Bezier tour
     vec3 tourPts[7] = {
-        vec3( 14,  4,  10),   // seg 0 P0 — start
-        vec3(-14,  8,  10),   // seg 0 P1
-        vec3(-14,  2, -10),   // seg 0 P2
-        vec3(  0,  1,  -6),   // junction
-
-        vec3( 14,  0,  -2),   // seg 1 P1 = 2*junction - P2 (C1 smooth)
-        vec3( 14,  6,   4),   // seg 1 P2
-        vec3( 14,  4,  10),   // seg 1 P3 — back to start
+        vec3( 14,  4,  10),
+        vec3(-14,  8,  10),
+        vec3(-14,  2, -10),
+        vec3(  0,  1,  -6),
+        vec3( 14,  0,  -2),
+        vec3( 14,  6,   4),
+        vec3( 14,  4,  10),
     };
 
     // Delta-time tracking
@@ -191,6 +198,7 @@ public:
         prog->addUniform("lightPos");
         prog->addAttribute("vertPos");
         prog->addAttribute("vertNor");
+        prog->addUniform("viewPos");
 
         // Texture shader
         texProg = make_shared<Program>();
@@ -203,62 +211,81 @@ public:
         texProg->addUniform("V");
         texProg->addUniform("M");
         texProg->addUniform("Texture0");
+        texProg->addUniform("flip");
         texProg->addAttribute("vertPos");
         texProg->addAttribute("vertNor");
         texProg->addAttribute("vertTex");
+        texProg->addUniform("lightPos"); 
 
-        // Ground texture
+
+        // Textures
+
+
+        // Ground (lake)
         texture0 = make_shared<Texture>();
         texture0->setFilename(resourceDirectory + "/lake.jpeg");
         texture0->init();
         texture0->setUnit(0);
-        texture0->setWrapModes(GL_REPEAT, GL_REPEAT);
+        texture0->setWrapModes(GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
 
-        // Sky texture
+        // Sky
         skyTex = make_shared<Texture>();
-        skyTex->setFilename(resourceDirectory + "/starry-sky.jpg");
+        skyTex->setFilename(resourceDirectory + "/nightsky.jpg");
         skyTex->init();
         skyTex->setUnit(0);
-        skyTex->setWrapModes(GL_REPEAT, GL_REPEAT);
+        skyTex->setWrapModes(GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
 
-        // Stage texture
+        // Stage
         stageTex = make_shared<Texture>();
         stageTex->setFilename(resourceDirectory + "/grass.jpeg");
         stageTex->init();
-        stageTex->setUnit(1);
-        stageTex->setWrapModes(GL_REPEAT, GL_REPEAT);
+        stageTex->setUnit(0);
+        stageTex->setWrapModes(GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
 
+        // Mountain texture 
+        mountainTex = make_shared<Texture>();
+        mountainTex->setFilename(resourceDirectory + "/hill.jpg");
+        mountainTex->init();
+        mountainTex->setUnit(0);
+        mountainTex->setWrapModes(GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
 
+        // Tree texture 
+        treeTex = make_shared<Texture>();
+        treeTex->setFilename(resourceDirectory + "/darkgrass.jpg");
+        treeTex->init();
+        treeTex->setUnit(0);
+        treeTex->setWrapModes(GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
 
-        // Enable blending for particles
+        // Particles
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        // Particle shader
         partProg = make_shared<Program>();
         partProg->setVerbose(true);
         partProg->setShaderNames(
             resourceDirectory + "/lab10_vert.glsl",
             resourceDirectory + "/lab10_frag.glsl");
-        partProg->init();
-        partProg->addUniform("P");
-        partProg->addUniform("V");
-        partProg->addUniform("M");
-        partProg->addUniform("alphaTexture");
-        partProg->addUniform("pColor");
-        partProg->addAttribute("vertPos");
-        partProg->addAttribute("vertColor");
 
-        // Particle texture
-        particleTex = make_shared<Texture>();
-        particleTex->setFilename(resourceDirectory + "/alpha.bmp");
-        particleTex->init();
-        particleTex->setUnit(0);
-        particleTex->setWrapModes(GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
+        if (partProg->init()) {
+            partProg->addUniform("P");
+            partProg->addUniform("V");
+            partProg->addUniform("M");
+            partProg->addUniform("alphaTexture");
+            partProg->addUniform("pColor");
+            partProg->addAttribute("vertPos");
+            partProg->addAttribute("vertColor");
 
-        // Create particle system at ballerina origin
-        thePartSystem = new particleSys(vec3(0, 1.0f, 0));
-        thePartSystem->gpuSetup();
+            particleTex = make_shared<Texture>();
+            particleTex->setFilename(resourceDirectory + "/alpha.bmp");
+            particleTex->init();
+            particleTex->setUnit(0);
+            particleTex->setWrapModes(GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE);
+
+            thePartSystem = new particleSys(vec3(0, 1.0f, 0));
+            thePartSystem->gpuSetup();
+        } else {
+            cerr << "WARNING: Particle shaders not found — particles disabled." << endl;
+        }
     }
 
     void initGeom(const std::string& resourceDirectory)
@@ -329,6 +356,18 @@ public:
             swan->init();
         }
 
+        // waterlily
+        TOshapes.clear();
+        rc = tinyobj::LoadObj(TOshapes, objMaterials, errStr,
+                              (resourceDirectory + "/waterlilyleaf.obj").c_str());
+        if (!rc) cerr << errStr << endl;
+        else {
+            waterlily = make_shared<Shape>(false);
+            waterlily->createShape(TOshapes[0]);
+            waterlily->measure();
+            waterlily->init();
+        }
+
         // stage
         TOshapes.clear();
         rc = tinyobj::LoadObj(TOshapes, objMaterials, errStr,
@@ -356,6 +395,35 @@ public:
             }
         }
 
+        // tree 
+        TOshapes.clear();
+        rc = tinyobj::LoadObj(TOshapes, objMaterials, errStr,
+                            (resourceDirectory + "/gentree.obj").c_str());
+        if (!rc) cerr << errStr << endl;
+        else {
+            for (size_t i = 0; i < TOshapes.size(); i++) {
+                auto part = make_shared<Shape>(true);
+                part->createShape(TOshapes[i]);
+                part->measure();
+                part->init();
+                treeParts.push_back(part);
+            }
+        }
+
+        // mountain 
+        TOshapes.clear();
+        rc = tinyobj::LoadObj(TOshapes, objMaterials, errStr,
+                              (resourceDirectory + "/mountain.obj").c_str());
+        if (!rc) cerr << errStr << endl;
+        else {
+            mountain = make_shared<Shape>(true);
+            mountain->createShape(TOshapes[0]);
+            mountain->measure();
+            mountain->init();
+        }
+
+        initGround();
+
         // sky sphere
         TOshapes.clear();
         rc = tinyobj::LoadObj(TOshapes, objMaterials, errStr,
@@ -368,8 +436,6 @@ public:
             skyBox->measure();
             skyBox->init();
         }
-
-        initGround();
     }
 
     void initGround()
@@ -384,7 +450,7 @@ public:
              g_groundSize, g_groundY, -g_groundSize
         };
         float GrndNorm[] = { 0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0, 0,1,0 };
-        static GLfloat GrndTex[] = { 0,0, 0,6, 6,6, 6,0 }; // tiled 6x
+        static GLfloat GrndTex[] = { 0,0, 0,1, 1,1, 1,0 };
         unsigned short idx[] = { 0,1,2, 0,2,3 };
 
         glGenVertexArrays(1, &GroundVertexArrayID);
@@ -408,9 +474,9 @@ public:
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
     }
 
+    // drawGround 
     void drawGround(shared_ptr<Program> curS)
     {
-        curS->bind();
         glBindVertexArray(GroundVertexArrayID);
         texture0->bind(curS->getUniform("Texture0"));
 
@@ -433,7 +499,6 @@ public:
         glDisableVertexAttribArray(1);
         glDisableVertexAttribArray(2);
         texture0->unbind();
-        curS->unbind();
     }
 
     void SetMaterial(shared_ptr<Program> curS, int i)
@@ -445,11 +510,11 @@ public:
                 glUniform3f(curS->getUniform("MatSpec"), 0.50f, 0.40f, 0.45f);
                 glUniform1f(curS->getUniform("MatShine"), 32.0f);
                 break;
-            case 1: // dark velvet
-                glUniform3f(curS->getUniform("MatAmb"),  0.03f, 0.00f, 0.05f);
-                glUniform3f(curS->getUniform("MatDif"),  0.18f, 0.05f, 0.28f);
-                glUniform3f(curS->getUniform("MatSpec"), 0.10f, 0.05f, 0.15f);
-                glUniform1f(curS->getUniform("MatShine"),  8.0f);
+            case 1: // dark pink velvet
+                glUniform3f(curS->getUniform("MatAmb"),  0.05f, 0.00f, 0.02f);
+                glUniform3f(curS->getUniform("MatDif"), 0.35f, 0.10f, 0.20f);
+                glUniform3f(curS->getUniform("MatSpec"), 0.25f, 0.10f, 0.15f);
+                glUniform1f(curS->getUniform("MatShine"), 8.0f);
                 break;
             case 2: // rose gold
                 glUniform3f(curS->getUniform("MatAmb"),  0.25f, 0.12f, 0.10f);
@@ -510,9 +575,9 @@ public:
 
         float aspect = width / (float)height;
 
-        // Tour update 
+        // Tour update
         if (tourActive) {
-            tourT += tourSpeed * dt * 2.0f; // 0..2 over full loop
+            tourT += tourSpeed * dt * 2.0f;
             if (tourT > 2.0f) tourT = 0.0f;
 
             int   seg  = (int)tourT;
@@ -526,7 +591,7 @@ public:
             eyePosition = bezier(p0, p1, p2, p3, segT);
         }
 
-        // View direction 
+        // View direction
         vec3 direction;
         direction.x = cos(phi) * sin(theta);
         direction.y = sin(phi);
@@ -539,7 +604,7 @@ public:
         front = normalize(center - eyePosition);
         right = normalize(cross(front, upCam));
 
-        // Matrices 
+        // Matrices
         auto Projection = make_shared<MatrixStack>();
         auto View       = make_shared<MatrixStack>();
         auto Model      = make_shared<MatrixStack>();
@@ -551,29 +616,13 @@ public:
         View->loadIdentity();
         View->lookAt(eyePosition, center, upCam);
 
-        vec3 lightPos = vec3(-2.0f + lightTrans, 2.0f, 2.0f);
+        vec3 lightPos = eyePosition + vec3(0.0f, 1.5f + lightTrans, 0.0f) + (front * 0.5f);
 
-        // Sky Sphere
-        glDepthMask(GL_FALSE);
-        texProg->bind();
-        glUniformMatrix4fv(texProg->getUniform("P"), 1, GL_FALSE, value_ptr(Projection->topMatrix()));
-        glUniformMatrix4fv(texProg->getUniform("V"), 1, GL_FALSE, value_ptr(View->topMatrix()));
-        glUniformMatrix4fv(texProg->getUniform("M"), 1, GL_FALSE,
-            value_ptr(glm::scale(
-                glm::translate(glm::mat4(1.0f), vec3(0.0f, 15.0f, 0.0f)), 
-                glm::vec3(50.0f)
-            )));
-        skyTex->bind(texProg->getUniform("Texture0"));
-        if (skyBox) skyBox->draw(texProg);
-        skyTex->unbind();
-        texProg->unbind();
-        glDepthMask(GL_TRUE);
-
-       
         prog->bind();
         glUniformMatrix4fv(prog->getUniform("P"), 1, GL_FALSE, value_ptr(Projection->topMatrix()));
         glUniformMatrix4fv(prog->getUniform("V"), 1, GL_FALSE, value_ptr(View->topMatrix()));
         glUniform3fv(prog->getUniform("lightPos"), 1, value_ptr(lightPos));
+        glUniform3fv(prog->getUniform("viewPos"),  1, value_ptr(eyePosition));
 
         // Bunny
         if (bunny) {
@@ -582,9 +631,9 @@ public:
                              bunny->max.y-bunny->min.y,
                              bunny->max.z-bunny->min.z});
             Model->pushMatrix();
-            Model->translate(vec3(0.0f, -3.0f, 3.0f));
+            Model->translate(vec3(0.0f, -3.0f, 5.0f));
             Model->rotate(radians(90.0f), vec3(0, 1, 0));
-            Model->scale(vec3(2.0f / ext));
+            Model->scale(vec3(1.0f / ext));
             Model->translate(-sc);
             SetMaterial(prog, 4);
             setModel(prog, Model);
@@ -592,44 +641,48 @@ public:
             Model->popMatrix();
         }
 
-        // reveal cycle
-        float cycle = fmod((float)t, 20.0f);
+        float cycle = fmod((float)t, 30.0f);
+        bool showSwan = cycle < 15.0f;
+        bool showBall = cycle >= 15.0f;
 
-        bool showSwan = cycle < 10.0f;
-        bool showBall = cycle >= 10.0f;
-
-        // center swan (only during first half)
+        // Center swan - show during first half of cycle
         if (showSwan && swan) {
-            vec3  sc  = (swan->max + swan->min) * 0.5f;
-            float ext = max({swan->max.x-swan->min.x,
-                            swan->max.y-swan->min.y,
-                            swan->max.z-swan->min.z});
+            vec3 sc = (swan->max + swan->min) * 0.5f;
+            float ext = max({swan->max.x - swan->min.x,
+                            swan->max.y - swan->min.y,
+                            swan->max.z - swan->min.z});
+            
+            // Update swan position for particles
+            swanPosition = vec3(0, -2.5f, 0);
+            
             Model->pushMatrix();
-            Model->translate(vec3(0, -1.0f, 0));
+            Model->translate(swanPosition);
             Model->rotate(radians(-90.0f), vec3(1, 0, 0));
-            Model->scale(vec3(3.0f / ext));
+            Model->scale(vec3(2.0f / ext));
             Model->translate(-sc);
-            SetMaterial(prog, 5);
+            SetMaterial(prog, 4);
             setModel(prog, Model);
             swan->draw(prog);
             Model->popMatrix();
         }
 
-        // ballerina rises from ground after cycle 
+        // Ballerina - show during second half of cycle (NOT permanent)
         if (showBall && ballerina) {
-            float riseT = glm::clamp((cycle - 10.0f) / 3.0f, 0.0f, 1.0f); 
-            float scale = glm::mix(0.01f, 1.0f, riseT);                   // tiny → full
-            float yOff  = glm::mix(-3.5f, 1.0f, riseT);                   // ground → stage
-
-            vec3  sc  = (ballerina->max + ballerina->min) * 0.5f;
-            float ext = max({ballerina->max.x-ballerina->min.x,
-                            ballerina->max.y-ballerina->min.y,
-                            ballerina->max.z-ballerina->min.z});
+            // Rise effect each time she appears
+            float riseT = glm::clamp((cycle - 15.0f) / 3.0f, 0.0f, 1.0f);
+            float scale = glm::mix(0.01f, 1.0f, riseT);
+            float yOff = glm::mix(-3.5f, -1.5f, riseT);
+            
+            vec3 sc = (ballerina->max + ballerina->min) * 0.5f;
+            float ext = max({ballerina->max.x - ballerina->min.x,
+                            ballerina->max.y - ballerina->min.y,
+                            ballerina->max.z - ballerina->min.z});
+            
             Model->pushMatrix();
             Model->translate(vec3(0, yOff, 0));
             Model->rotate((float)t * 0.8f, vec3(0, 1, 0));
             Model->rotate(radians(-90.0f), vec3(1, 0, 0));
-            Model->scale(vec3(scale * 6.0f / ext));
+            Model->scale(vec3(scale * 4.0f / ext));
             Model->translate(-sc);
             SetMaterial(prog, mToggle ? 1 : 0);
             setModel(prog, Model);
@@ -637,7 +690,8 @@ public:
             Model->popMatrix();
         }
 
-        // Swans
+
+        // Side swans
         if (swan) {
             vec3  sc  = (swan->max + swan->min) * 0.5f;
             float ext = max({swan->max.x-swan->min.x,
@@ -655,9 +709,48 @@ public:
                 swan->draw(prog);
                 Model->popMatrix();
             };
-            drawSwan(vec3( 3.0f, -2.0f, 2.0f), radians(-30.0f));
-            drawSwan(vec3(-3.0f, -2.0f, 2.0f), radians( 30.0f));
+            drawSwan(vec3( 3.0f, -2.5f, 2.0f), radians(-30.0f));
+            drawSwan(vec3(-3.0f, -2.5f, 2.0f), radians( 30.0f));
         }
+
+        // waterlily
+        if (waterlily) {
+            vec3  sc  = (waterlily->max + waterlily->min) * 0.5f;
+            float ext = max({waterlily->max.x-waterlily->min.x,
+                             waterlily->max.y-waterlily->min.y,
+                             waterlily->max.z-waterlily->min.z});
+            auto drawWaterlily = [&](vec3 pos, float yRot) {
+                Model->pushMatrix();
+                Model->translate(pos);
+                Model->rotate(yRot, vec3(0, 1, 0));
+                Model->rotate(radians(-90.0f), vec3(1, 0, 0));
+                Model->scale(vec3(1.8f / ext));
+                Model->translate(-sc);
+                SetMaterial(prog, 6);
+                setModel(prog, Model);
+                waterlily->draw(prog);
+                Model->popMatrix();
+            };
+            // Left cluster
+            drawWaterlily(vec3(-10.0f, -3.4f,-10.0f), radians(-30.0f));
+            drawWaterlily(vec3(-11.0f, -3.4f, -5.0f), radians( 30.0f));
+            drawWaterlily(vec3(-12.0f, -3.4f, -7.5f), radians( 15.0f));
+            drawWaterlily(vec3( -8.0f, -3.4f, -9.0f), radians( 45.0f));
+            drawWaterlily(vec3(-13.0f, -3.4f, -3.0f), radians(-20.0f));
+            // Right cluster
+            drawWaterlily(vec3( 10.0f, -3.4f,-10.0f), radians( 30.0f));
+            drawWaterlily(vec3( 11.0f, -3.4f, -5.0f), radians(-30.0f));
+            drawWaterlily(vec3( 12.0f, -3.4f, -7.5f), radians(-15.0f));
+            drawWaterlily(vec3(  8.0f, -3.4f, -9.0f), radians(-45.0f));
+            drawWaterlily(vec3( 13.0f, -3.4f, -3.0f), radians( 20.0f));
+            // Front scatter
+            drawWaterlily(vec3( -6.0f, -3.4f,  10.0f), radians( 10.0f));
+            drawWaterlily(vec3(  5.0f, -3.4f,  9.0f), radians(-10.0f));
+            drawWaterlily(vec3(  0.0f, -3.4f, 10.0f), radians( 60.0f));
+            drawWaterlily(vec3( -8.0f, -3.4f,  6.0f), radians( 80.0f));
+            drawWaterlily(vec3(  7.0f, -3.4f,  7.0f), radians(-80.0f));
+        }
+
 
         // Flowers (hierarchical animation)
         if (!flowerParts.empty()) {
@@ -669,14 +762,14 @@ public:
             vec3  fc       = (fMax + fMin) * 0.5f;
             float fex      = max({fMax.x-fMin.x, fMax.y-fMin.y, fMax.z-fMin.z});
             float stemH    = fMax.y - fMin.y;
-            float scaleFac = 2.0f / fex;
+            float scaleFac = 1.5f / fex;
 
             vec3 stemBase = vec3(0, fMin.y,               0);
             vec3 stemTip  = vec3(0, fMin.y + stemH*0.65f, 0);
 
             float fPos[][3] = {
-                {-8,-1.5f,2},{-6,-1.5f,-1},{-4,-1.5f,3},{-2,-2.0f,3},
-                { 2,-1.5f,-2},{ 4,-1.5f,3},{ 6,-1.5f,-1},{ 8,-1.5f,2}
+                {-8,-2.5f,2},{-6,-2.5f,-1},{-4,-2.5f,3},{-2,-3.0f,3},
+                { 2,-2.5f,-2},{ 4,-2.5f,3},{ 6,-2.5f,-1},{ 8,-2.5f,2}
             };
 
             for (int i = 0; i < 8; i++) {
@@ -723,30 +816,30 @@ public:
                     Model->popMatrix();
                 }
 
-                Model->popMatrix(); // Pivot 2
-                Model->popMatrix(); // Pivot 1
-                Model->popMatrix(); // world pos
+                Model->popMatrix();
+                Model->popMatrix();
+                Model->popMatrix();
             }
         }
 
         prog->unbind();
 
-       
         texProg->bind();
         glUniformMatrix4fv(texProg->getUniform("P"), 1, GL_FALSE, value_ptr(Projection->topMatrix()));
         glUniformMatrix4fv(texProg->getUniform("V"), 1, GL_FALSE, value_ptr(View->topMatrix()));
+        glUniform3fv(texProg->getUniform("lightPos"), 1, value_ptr(lightPos));
 
-        // Textured stage
+
+        // Stage
         if (stage) {
             vec3  sc  = (stage->max + stage->min) * 0.5f;
             float ext = max({stage->max.x - stage->min.x,
                              stage->max.y - stage->min.y,
                              stage->max.z - stage->min.z});
             Model->pushMatrix();
-            Model->translate(vec3(0, -3.5f, -3.0f));
-           // Model->scale(vec3(1,-1,1));
+            Model->translate(vec3(0.0f, -3.5f, 1.0f));
             Model->rotate(radians(-90.0f), vec3(1, 0, 0));
-            Model->scale(vec3(25.0f / ext));
+            Model->scale(vec3(15.0f / ext));
             Model->translate(-sc);
             glUniformMatrix4fv(texProg->getUniform("M"), 1, GL_FALSE,
                                value_ptr(Model->topMatrix()));
@@ -756,12 +849,109 @@ public:
             Model->popMatrix();
         }
 
-        // Round ice disc ground — disc is already at y=-3.5, use identity M
+        // Mountain
+        if (mountain) {
+            vec3  sc  = (mountain->max + mountain->min) * 0.5f;
+            float ext = max({mountain->max.x - mountain->min.x,
+                             mountain->max.y - mountain->min.y,
+                             mountain->max.z - mountain->min.z});
+            Model->pushMatrix();
+            Model->translate(vec3(5.0f, -2.0f, -10.0f));
+            Model->rotate(radians(90.0f), vec3(0, 1, 0));
+            Model->scale(vec3(15.0f / ext));
+            Model->translate(-sc);
+            glUniformMatrix4fv(texProg->getUniform("M"), 1, GL_FALSE,
+                               value_ptr(Model->topMatrix()));
+            mountainTex->bind(texProg->getUniform("Texture0"));
+            mountain->draw(texProg);
+            mountainTex->unbind();
+            Model->popMatrix();
+        }
+
+        // Trees
+        if (!treeParts.empty()) {
+            vec3 tMin(FLT_MAX), tMax(-FLT_MAX);
+            for (auto &p : treeParts) {
+                tMin = glm::min(tMin, p->min);
+                tMax = glm::max(tMax, p->max);
+            }
+            vec3  sc  = (tMax + tMin) * 0.5f;
+            float ext = max({tMax.x-tMin.x, tMax.y-tMin.y, tMax.z-tMin.z});
+            float treeScale = 6.0f / ext;
+
+            treeTex->bind(texProg->getUniform("Texture0"));
+
+            auto drawTree = [&](float x, float z) {
+                Model->pushMatrix();
+                Model->translate(vec3(x, -1.0f, z));
+                Model->scale(vec3(treeScale));
+                Model->translate(-sc);
+                glUniformMatrix4fv(texProg->getUniform("M"), 1, GL_FALSE,
+                                value_ptr(Model->topMatrix()));
+                for (auto &p : treeParts) p->draw(texProg);
+                Model->popMatrix();
+            };
+
+            // Original trees
+            for (float x = -18.0f; x <= 18.0f; x += 6.0f) {
+                drawTree(x,  18.0f);
+                drawTree(x, -18.0f);
+            }
+            for (float z = -12.0f; z <= 12.0f; z += 6.0f) {
+                drawTree(-18.0f, z);
+                drawTree( 18.0f, z);
+            }
+            
+            // Second ring of trees (closer to center)
+            for (float x = -15.0f; x <= 15.0f; x += 10.0f) {
+                drawTree(x,  12.0f);
+                drawTree(x, -12.0f);
+            }
+            for (float z = -9.0f; z <= 9.0f; z += 2.0f) {
+                drawTree(-15.0f, z);
+                drawTree( 15.0f, z);
+            }
+            
+            // Corner trees (diagonal positions)
+            float corners[] = {-16.0f, -8.0f, 8.0f, 16.0f};
+            for (float cx : corners) {
+                for (float cz : corners) {
+                    if (abs(cx) == 16.0f && abs(cz) == 16.0f) {
+                        drawTree(cx, cz);  // Add trees at the far corners
+                    }
+                }
+            }
+
+            treeTex->unbind();
+        }
+
+        // Ground 
         glUniformMatrix4fv(texProg->getUniform("M"), 1, GL_FALSE,
                            value_ptr(mat4(1.0f)));
         drawGround(texProg);
 
+
+        // Sky Sphere 
+        glDepthMask(GL_FALSE);
+        texProg->bind();
+        glUniform1i(texProg->getUniform("flip"), 0);
+        glUniformMatrix4fv(texProg->getUniform("P"), 1, GL_FALSE, value_ptr(Projection->topMatrix()));
+        glUniformMatrix4fv(texProg->getUniform("V"), 1, GL_FALSE, value_ptr(View->topMatrix()));
+        glUniformMatrix4fv(texProg->getUniform("M"), 1, GL_FALSE,
+            value_ptr(glm::scale(
+                glm::translate(glm::mat4(1.0f), vec3(0.0f, 15.0f, 0.0f)),
+                glm::vec3(28.0f)
+            )));
+        skyTex->bind(texProg->getUniform("Texture0"));
+        if (skyBox) skyBox->draw(texProg);
+        skyTex->unbind();
         texProg->unbind();
+        glDepthMask(GL_TRUE);
+
+
+
+        texProg->unbind();
+
 
         // Update animation state
         sTheta = (float)sin(t * 1.4);
@@ -769,32 +959,65 @@ public:
         hTheta = std::max(0.0f, (float)cos(t * 1.2));
 
 
-        // particles
-        partProg->bind();
-        glUniform3f(partProg->getUniform("pColor"), 1.0f, 0.85f, 0.0f);  // yellow
-        glPointSize(60.0f);                        
+        // Particles 
+        if (thePartSystem && partProg) {
+            // Detect when swan appears (transition from false to true)
+            if (showSwan && !prevShowSwan) {
+                // Reset particle system when swan appears
+                thePartSystem->reSet();
+                particleDelayTimer = 0.0f;
+            }
+            
+            // Update timer - particles activate after swan appears
+            if (showSwan) {
+                particleDelayTimer += dt;
+            }
+            
+            // Particles are active
+            bool shouldBeActive = (particleDelayTimer > 1.0f) && (showSwan || showBall);
+            
+            // Once particles become active, keep them active throughout the cycle
+            if (shouldBeActive) {
+                particlesActive = true;
+            }
+    
+            prevShowSwan = showSwan;
+            
+            partProg->bind();
+        
+            
+            glPointSize(particlesActive ? 80.0f : 10.0f);
 
-        glUniformMatrix4fv(partProg->getUniform("P"), 1, GL_FALSE, value_ptr(Projection->topMatrix()));
-        glUniformMatrix4fv(partProg->getUniform("V"), 1, GL_FALSE, value_ptr(View->topMatrix()));
+            glUniformMatrix4fv(partProg->getUniform("P"), 1, GL_FALSE, value_ptr(Projection->topMatrix()));
+            glUniformMatrix4fv(partProg->getUniform("V"), 1, GL_FALSE, value_ptr(View->topMatrix()));
 
-        Model->pushMatrix();
-        Model->translate(vec3(0, -1.0f, 3.0f));
-        Model->scale(vec3(6.0f));
-        glUniformMatrix4fv(partProg->getUniform("M"), 1, GL_FALSE, value_ptr(Model->topMatrix()));
+            Model->pushMatrix();
+            
+            // Position particles at swan location (even when ballerina is showing)
+            vec3 particlePos = swanPosition + vec3(0.0f, -0.5f, 0.0f);
+            if (!particlesActive) {
+                particlePos = vec3(0, -10.0f, 0); // Hide when inactive
+            }
+            
+            Model->translate(particlePos);
+            Model->scale(vec3(particlesActive ? 5.0f : 1.0f));
+            
+            glUniformMatrix4fv(partProg->getUniform("M"), 1, GL_FALSE, value_ptr(Model->topMatrix()));
 
-        particleTex->bind(partProg->getUniform("alphaTexture"));
-        thePartSystem->setCamera(View->topMatrix());
-        thePartSystem->update();
+            particleTex->bind(partProg->getUniform("alphaTexture"));
+            thePartSystem->setCamera(View->topMatrix());
+            thePartSystem->update();
 
-        glDepthMask(GL_FALSE);
-        thePartSystem->drawMe(partProg);
-        glDepthMask(GL_TRUE);
+            glDepthMask(GL_FALSE);
+            thePartSystem->drawMe(partProg);
+            glDepthMask(GL_TRUE);
 
-        particleTex->unbind();
-        Model->popMatrix();
+            particleTex->unbind();
+            Model->popMatrix();
 
-        glPointSize(3.0f);                            
-        partProg->unbind();
+            glPointSize(10.0f);
+            partProg->unbind();
+        }
 
         Projection->popMatrix();
         View->popMatrix();
